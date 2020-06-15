@@ -1,0 +1,106 @@
+---
+- name: Deployment for Production server
+  hosts: <HOST_FROM_/etc/ansible/hosts>
+  remote_user: <REMOTE_USER>
+ 
+  vars:    #Used inside Ansible Play book Only !!!
+    DEV_USER: "deploy"
+    APP_ROOT: "/home/deploy/code/NEW"
+    SCRIPT_ROOT: "/home/deploy/code/NEW/bin"
+    TARGET_DIR: "/var/live"
+
+  environment:    #Used for Unix Environment Variables
+    DEV_USER: "deploy"
+    LIWWA_ENV: PRODUCTION
+    
+  tasks:
+  - name: get latest code from master Branch (for PRODUCTION)
+    git:
+      repo: <REPO_URL>
+      dest: "{{APP_ROOT}}"
+      update: yes
+      version: master
+      force: yes
+
+  - pip:
+      requirements: "{{APP_ROOT}}/pip/requirements.txt"
+      virtualenv: "{{APP_ROOT}}/venv"
+#      state: forcereinstall
+
+  - name: Install and Build npm packages 
+    shell: |
+      cd {{APP_ROOT}}/app/static
+      source {{APP_ROOT}}/venv/bin/activate
+      npm install
+      npm run build
+    args:
+      executable: /bin/bash
+
+  - name: copying Files from /home/deploy/code/NEW to /var/live and changing owner to www-data
+    become: true
+    shell: |
+      rsync -avz --delete --exclude '*.pyc' --exclude venv --exclude .git --exclude static/node_modules {{APP_ROOT}}/ {{TARGET_DIR}}
+      chown -R www-data: {{TARGET_DIR}}
+    args:
+      executable: /bin/bash
+
+  - name: Installing pip requirements.txt on /var/live   using the user  www-data
+    become: yes
+    become_user: www-data 
+    pip:
+      requirements: "{{TARGET_DIR}}/pip/requirements.txt"
+      virtualenv: "{{TARGET_DIR}}/venv"
+#      state: forcereinstall
+
+  - name: "Alembic Upgrade head on  {{<SOME_DEFINED_VARS>}}"
+    shell: |
+      cd {{APP_ROOT}}
+      source {{APP_ROOT}}/venv/bin/activate
+      export PYTHONPATH={{APP_ROOT}}
+      alembic upgrade head
+    args:
+      executable: /bin/bash
+  
+  - name: "copying Production Secrects files from /secrets/... to {{TARGET_DIR}}"
+    become: yes
+    shell: |
+      cp /secrets/production_secrets_config.py {{TARGET_DIR}}
+      cp -r /secrets/production_secrets/ {{TARGET_DIR}}
+      chown www-data: {{TARGET_DIR}}/production_secrets_config.py
+      chown -R www-data: {{TARGET_DIR}}/production_secrets/
+    args:
+      executable: /bin/bash
+
+  - name: "copying cron Jobs from  {{APP_ROOT}}/cron.d  to  /etc/cron.d  with root "
+    become: true
+    shell: |
+      rsync -avz --delete {{APP_ROOT}}/cron.d/ /etc/cron.d
+      chown -R root: /etc/cron.d
+    args:
+      executable: /bin/bash
+
+  - name: Sending Curl notification to Slack 
+    shell: |
+      GIT_REVISION=$( cd {{APP_ROOT}} && git rev-parse HEAD )
+      curl -X POST --data-urlencode "payload={\"channel\": \"#test\", \"username\": \"Production_Deploy\", \"icon_emoji\": \":tada:\", \"text\": \"Jenkins just made a $LIWWA_ENV deploy! Commit: <Github_REPO_URL/$GIT_REVISION|$GIT_REVISION>\"}" <SLACK_HOOK_URL>
+    args:
+      executable: /bin/bash
+
+  - name: Babel Compiling translations... 
+    shell: |
+      cd {{APP_ROOT}}
+      source {{APP_ROOT}}/venv/bin/activate
+      pybabel compile -d {{APP_ROOT}}/app/translations
+    args:
+      executable: /bin/bash
+
+  - name: restarting apache2 gracefully
+    become: true
+    shell: |
+      /etc/init.d/apache2 graceful
+    args:
+      executable: /bin/bash
+
+
+#  - debug: 
+#      msg: "{{var.stdout}}"
