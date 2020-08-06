@@ -53,6 +53,8 @@
 #      state: forcereinstall
 
   - name: "Alembic Upgrade head on  {{<SOME_DEFINED_VARS>}}"
+    delegate_to: <SPECIFIC IP/Host>
+    throttle: 1 # this to run it on one server without parallel 
     shell: |
       cd {{APP_ROOT}}
       source {{APP_ROOT}}/venv/bin/activate
